@@ -1,57 +1,85 @@
-// src/infrastructure/scraper/instagramDocument.ts
 import * as cheerio from 'cheerio';
 import { BaseScraper } from './base';
 import { Document } from '../../domain/models/document';
+import { logger } from '../../utils/logger';
+import type { CheerioAPI, Cheerio } from 'cheerio';
 
-/**
- * Instagram Platform のドキュメントスクレイパー
- * Meta Developers サイトのInstagram Platform ドキュメントをスクレイピング
- */
 export class InstagramDocumentScraper extends BaseScraper {
   protected async scrapeSingleDocument(path: string): Promise<Document | null> {
-    const response = await this.client.get(path);
-    const $ = cheerio.load(response.data);
+    try {
+      logger.info(`Scraping document: ${this.target.baseUrl}${path}`);
 
-    // メインコンテンツの取得
-    const mainContent = $('#documentation_body_pagelet');
-    if (!mainContent.length) {
-      console.warn(`No main content found for path: ${path}`);
-      return null;
+      const response = await this.client.get(path);
+      const $ = cheerio.load(response.data);
+
+      const mainContent = $('#documentation_body_pagelet');
+      if (!mainContent.length) {
+        logger.warn(`No main content found for path: ${path}`);
+        return null;
+      }
+
+      const title = this.extractTitle($);
+      const content = this.extractAndFormatContent($, mainContent);
+
+      logger.info(`Successfully scraped document: ${title}`);
+
+      return new Document(
+        `${this.target.baseUrl}${path}`,
+        content,
+        {
+          title,
+          lastUpdated: new Date(),
+          category: this.extractCategory(path)
+        }
+      );
+    } catch (error) {
+      logger.error(`Failed to scrape ${path}:`, error);
+      throw error;
     }
+  }
 
-    // タイトルの取得
-    const title = mainContent.find('h1').first().text().trim();
+  /**
+   * タイトルを抽出して整形する
+   */
+  private extractTitle($: CheerioAPI): string {
+    const title = $('h1').first().text().trim();
+    return title || 'Untitled Document';
+  }
 
-    // 本文の取得（不要な要素を除外して整形）
-    const clonedContent = mainContent.clone();
-    // 不要な要素の削除
-    clonedContent.find('script').remove();
-    // その他、除外したい要素があれば追加
+  /**
+   * コンテンツを抽出して整形する
+   */
+  private extractAndFormatContent($: CheerioAPI, mainContent: Cheerio<any>): string {
+    // 不要な要素を削除
+    const contentClone = mainContent.clone();
+    contentClone.find('script, style, nav, footer, .sidebar, .navigation').remove();
 
-    const content = clonedContent.text().trim()
+    // テキストの取得と整形
+    let content = contentClone.text()
       .replace(/\s+/g, ' ')  // 連続する空白を1つに
-      .replace(/\n+/g, '\n'); // 連続する改行を1つに
+      .replace(/\n\s*\n/g, '\n')  // 連続する改行を1つに
+      .trim();
 
-    if (!content) {
-      console.warn(`No content found for path: ${path}`);
-      return null;
-    }
+    // セクション間に適切な改行を追加
+    content = this.formatSections($, content);
 
-    // デバッグ用のログ出力
-    console.log('Debug - Found elements:', {
-      hasMainContent: mainContent.length > 0,
-      title: title,
-      contentLength: content.length
+    return content;
+  }
+
+  /**
+   * セクション構造を整形する
+   */
+  private formatSections($: CheerioAPI, content: string): string {
+    const sections: string[] = [];
+
+    $('#documentation_body_pagelet h1, #documentation_body_pagelet h2, #documentation_body_pagelet h3').each((_, elem) => {
+      const section = $(elem);
+      const sectionContent = section.nextUntil('h1, h2, h3').text().trim();
+      if (sectionContent) {
+        sections.push(`${section.text().trim()}\n${sectionContent}`);
+      }
     });
 
-    return new Document(
-      `${this.target.baseUrl}${path}`,
-      content,
-      {
-        title: title || 'Untitled Document',
-        lastUpdated: new Date(),
-        category: this.extractCategory(path)
-      }
-    );
+    return sections.join('\n\n');
   }
 }
