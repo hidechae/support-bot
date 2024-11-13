@@ -4,7 +4,8 @@ export interface ScrapingTarget {
 }
 
 export interface ScraperConfig {
-  requestDelay: number;
+  requestDelay: number;  // ms
   maxRetries: number;
   headers: Record<string, string>;
+  timeout: number;
 }

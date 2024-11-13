@@ -1,8 +1,8 @@
-import { Document, DocumentMetadata } from '../../domain/models/document';
-import { ScraperConfig, ScrapingTarget } from './types';
 import axios, { AxiosInstance } from 'axios';
+import { Document } from '../../domain/models/document';
+import { ScraperConfig, ScrapingTarget } from './types';
+import { logger } from '../../utils/logger';
 import { setTimeout } from 'timers/promises';
-
 /**
  * スクレイパーの基底クラス
  * 各サイト固有のスクレイピングロジックを実装するための抽象クラス
@@ -57,20 +57,80 @@ export abstract class BaseScraper {
    */
   async scrapeDocuments(): Promise<Document[]> {
     const documents: Document[] = [];
+    const errors: Array<{ path: string; error: any }> = [];
+    let processedCount = 0;
+
+    logger.info(`Starting to scrape ${this.target.paths.length} documents`);
 
     for (const path of this.target.paths) {
       try {
-        await setTimeout(this.config.requestDelay || 1000);
-        const doc = await this.scrapeSingleDocument(path);
+        // 進捗状況の表示
+        processedCount++;
+        const progressPercent = (processedCount / this.target.paths.length * 100).toFixed(1);
+        logger.info(`Processing ${processedCount}/${this.target.paths.length} (${progressPercent}%): ${path}`);
+
+        // リトライ処理を含むドキュメント取得
+        const doc = await this.scrapeWithRetry(path);
         if (doc) {
           documents.push(doc);
         }
+
+        // リクエスト間隔の制御
+        if (processedCount < this.target.paths.length) {
+          const delay = this.config.requestDelay || 2000;
+          logger.debug(`Waiting ${delay}ms before next request`);
+          await setTimeout(delay);
+        }
+
       } catch (error) {
-        console.error(`Failed to scrape ${path}:`, error);
+        logger.error(`Failed to scrape ${path}:`, error);
+        errors.push({ path, error });
       }
     }
 
+    // 完了サマリーの出力
+    this.logScrapingSummary(documents, errors);
+
     return documents;
+  }
+
+  private async scrapeWithRetry(path: string, maxRetries = 3): Promise<Document | null> {
+    let lastError: any;
+
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        return await this.scrapeSingleDocument(path);
+      } catch (error) {
+        lastError = error;
+        if (attempt < maxRetries) {
+          const delay = Math.pow(2, attempt) * 1000; // 指数バックオフ
+          logger.warn(`Attempt ${attempt} failed for ${path}, retrying in ${delay}ms...`);
+          await setTimeout(delay);
+        }
+      }
+    }
+
+    logger.error(`All ${maxRetries} attempts failed for ${path}`);
+    throw lastError;
+  }
+
+  private logScrapingSummary(documents: Document[], errors: Array<{ path: string; error: any }>) {
+    const totalPaths = this.target.paths.length;
+    const successCount = documents.length;
+    const errorCount = errors.length;
+    const successRate = ((successCount / totalPaths) * 100).toFixed(1);
+
+    logger.info('\n=== Scraping Summary ===');
+    logger.info(`Total paths processed: ${totalPaths}`);
+    logger.info(`Successfully scraped: ${successCount} (${successRate}%)`);
+    logger.info(`Failed: ${errorCount}`);
+
+    if (errors.length > 0) {
+      logger.info('\nFailed paths:');
+      errors.forEach(({ path, error }) => {
+        logger.error(`- ${path}: ${error.message}`);
+      });
+    }
   }
 
   /**
