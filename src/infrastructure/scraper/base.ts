@@ -1,8 +1,11 @@
+// src/infrastructure/scraper/base.ts
 import axios, { AxiosInstance } from 'axios';
 import { Document } from '../../domain/models/document';
 import { ScraperConfig, ScrapingTarget } from './types';
 import { logger } from '../../utils/logger';
 import { setTimeout } from 'timers/promises';
+import { config } from '../../config';
+
 /**
  * スクレイパーの基底クラス
  * 各サイト固有のスクレイピングロジックを実装するための抽象クラス
@@ -12,12 +15,14 @@ export abstract class BaseScraper {
 
   constructor(
     protected readonly target: ScrapingTarget,
-    protected readonly config: Partial<ScraperConfig> = {}
+    protected readonly scraperConfig: Partial<ScraperConfig> = {}
   ) {
+    const { userAgent, timeout } = config.scraping;
+
     this.client = axios.create({
       baseURL: target.baseUrl,
       headers: {
-        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36',
+        'User-Agent': userAgent,
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
         'Accept-Language': 'ja,en-US;q=0.9,en;q=0.8',
         'Accept-Encoding': 'gzip, deflate, br',
@@ -30,9 +35,9 @@ export abstract class BaseScraper {
         'sec-fetch-site': 'none',
         'sec-fetch-user': '?1',
         'upgrade-insecure-requests': '1',
-        ...config.headers
+        ...scraperConfig.headers
       },
-      timeout: 10000,
+      timeout: scraperConfig.timeout || timeout,
       maxRedirects: 5,
       withCredentials: true,  // Cookie を送信する
     });
@@ -77,7 +82,7 @@ export abstract class BaseScraper {
 
         // リクエスト間隔の制御
         if (processedCount < this.target.paths.length) {
-          const delay = this.config.requestDelay || 2000;
+          const delay = this.scraperConfig.requestDelay || config.scraping.baseDelay;
           logger.debug(`Waiting ${delay}ms before next request`);
           await setTimeout(delay);
         }
@@ -94,7 +99,7 @@ export abstract class BaseScraper {
     return documents;
   }
 
-  private async scrapeWithRetry(path: string, maxRetries = 3): Promise<Document | null> {
+  private async scrapeWithRetry(path: string, maxRetries = config.scraping.maxRetries): Promise<Document | null> {
     let lastError: any;
 
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
@@ -103,7 +108,7 @@ export abstract class BaseScraper {
       } catch (error) {
         lastError = error;
         if (attempt < maxRetries) {
-          const delay = Math.pow(2, attempt) * 1000; // 指数バックオフ
+          const delay = Math.pow(2, attempt) * 1000;
           logger.warn(`Attempt ${attempt} failed for ${path}, retrying in ${delay}ms...`);
           await setTimeout(delay);
         }
